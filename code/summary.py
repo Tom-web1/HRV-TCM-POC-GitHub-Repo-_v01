@@ -1,62 +1,66 @@
 # code/summary.py
 # ==========================================
 # 將 HRV 四象限 + TP/RV/SDNN 分級
-# 轉成一般人看得懂的體質說明與建議
+# 轉成一般人看得懂的體質說明、生理特徵與建議
 # ==========================================
 
 from typing import Dict, Any, Optional
 
 from .levels import HRVLevels
 from .quadrant import analyze_quadrant
+from .phenotypes import generate_phenotypes
 
 
 # 四象限標籤對應的中文說明
 QUADRANT_DESC = {
-    "陽實型": "交感偏強、能量偏高，容易處在「火力全開」狀態。",
-    "陽虛型": "交感主導但能量不足，外表撐得住、內在容易疲憊。",
-    "陰實型": "副交感偏強、代謝較慢，偏向「濕重、黏滯」體質。",
-    "陰虛型": "陰液不足、較容易燥熱、睡不好或心神較難安定。",
-    "陰陽平衡型": "整體在陰陽與虛實之間相對平衡，是較理想的狀態。",
-    "未知": "目前數據不足以明確判定體質傾向。",
+    "陽實型": "交感偏強、能量偏高，容易處在「火力全開」但較難放鬆的狀態。",
+    "陽虛型": "交感主導但能量不足，外表撐得住，內在較易疲憊與手腳冰冷。",
+    "陰實型": "副交感偏強、代謝較慢，偏向濕重、黏滯與循環較緩的體質。",
+    "陰虛型": "陰液相對不足，較易燥熱、心煩與睡不好，恢復效率偏低。",
+    "陰陽平衡型": "整體在陰陽與虛實之間相對平衡，屬於較理想的自律神經狀態。",
+    "未知": "目前數據不足以明確判定體質傾向，建議日後持續追蹤變化。",
 }
 
 # 依四象限給出大方向建議（不做醫療診斷）
 QUADRANT_ADVICE = {
     "陽實型": [
-        "留意情緒與血壓變化，避免過度熬夜與刺激性飲食（咖啡、能量飲）。",
+        "留意情緒與血壓變化，避免長期熬夜與高刺激飲食（咖啡、能量飲）。",
         "安排固定的放鬆時間，如深呼吸、伸展、正念或散步，幫助降火與穩定自律神經。",
     ],
     "陽虛型": [
-        "建立規律作息，避免熬夜，白天適度曬太陽，幫助提升陽氣。",
-        "可搭配輕中強度運動（快走、慢跑、肌力訓練），循序漸進補足體力。",
+        "建立規律作息，避免熬夜，白天適度曬太陽，幫助提升陽氣與體力。",
+        "可搭配輕中強度運動（快走、慢跑、肌力訓練），循序漸進補足體能。",
     ],
     "陰實型": [
         "飲食上減少過甜、過油與冰冷食物，避免濕氣與黏滯感累積。",
-        "增加適度活動與流汗機會，如快走、適量運動，促進循環與代謝。",
+        "增加適度活動與流汗機會，如快走或舒適流汗的運動，促進循環與代謝。",
     ],
     "陰虛型": [
-        "避免過度熬夜與長期高壓，給自己足夠的睡眠與休息。",
-        "可多做溫和伸展、腹式呼吸，幫助身心放鬆與陰液恢復。",
+        "避免長期熬夜與高壓環境，給自己足夠的睡眠與情緒休息時間。",
+        "可多做溫和伸展、腹式呼吸與放鬆練習，幫助身心安定與陰液恢復。",
     ],
     "陰陽平衡型": [
-        "目前整體調節能力尚佳，建議維持規律作息與運動習慣。",
-        "持續關注壓力與睡眠品質，預防長期累積造成自律神經失衡。",
+        "目前整體調節能力尚佳，建議持續維持良好作息與規律運動習慣。",
+        "持續關注壓力與睡眠品質，避免長期超量負荷打破目前的平衡。",
     ],
     "未知": [
-        "建議再次量測或延長記錄時間，以取得更穩定的自律神經數據。",
+        "建議在身心狀態穩定時再次量測，或搭配較長期的追蹤評估自律神經狀態。",
     ],
 }
 
 
-def _interpret_hr(hr: float) -> str:
+def _interpret_hr(hr: Optional[float]) -> str:
     """用心率 HR 給一小段「神經張力」說明（非醫療判讀）"""
+    if hr is None:
+        return "心率資料不足，暫無法判讀目前的緊張程度。"
+
     try:
         h = float(hr)
     except Exception:
-        return "心率資料不足，暫無法判讀目前的緊張程度。"
+        return "心率資料異常，僅供參考。"
 
     if h < 60:
-        return "本次量測時心率偏低，可能與平時有運動習慣或副交感較活躍有關。"
+        return "本次量測時心率偏低，若平時有運動習慣，可能與訓練或副交感較活躍有關。"
     elif 60 <= h <= 80:
         return "本次量測時心率落在一般靜息範圍，代表當下緊張程度大致穩定。"
     else:
@@ -78,7 +82,7 @@ def _interpret_healthy_zone(dist: Optional[float]) -> str:
     elif d < 1.5:
         return "測量點略偏離健康參考區，代表目前狀態有輕度失衡，但仍屬可調整範圍。"
     else:
-        return "測量點明顯偏離健康參考區，代表身心能量與陰陽調節已有較明顯落差，建議持續追蹤並調整生活作息。"
+        return "測量點明顯偏離健康參考區，代表身心能量與陰陽調節已有明顯落差，建議持續追蹤並調整作息。"
 
 
 def generate_summary(
@@ -124,7 +128,6 @@ def generate_summary(
     rv_level = level_info.get("RV_Level", "")
     sd_level = level_info.get("SDNN_Level", "")
 
-    # HR 與 Healthy Zone 說明
     hr_text = _interpret_hr(getattr(measures, "HR", None))
     hz_text = _interpret_healthy_zone(quad_info.get("healthy_zone_distance", None))
 
@@ -136,15 +139,18 @@ def generate_summary(
         hz_text,
         bmi_part,
     ]
-
     summary_text = " ".join([s for s in summary_parts if s])
 
-    # 5) 養生建議（列表）
+    # 5) 生理特徵（用 phenotypes 模組產生）
+    phenotypes = generate_phenotypes(measures, quadrant, level_info)
+
+    # 6) 養生建議（列表）
     advice_list = QUADRANT_ADVICE.get(quadrant, QUADRANT_ADVICE["未知"])
 
     return {
         "title": title,
         "summary": summary_text,
+        "phenotypes": phenotypes,  # 🔥 給前端「常見生理特徵」使用
         "advice": advice_list,
         "meta": {
             "quadrant": quadrant,
@@ -159,3 +165,4 @@ def generate_summary(
             "healthy_zone_distance": quad_info.get("healthy_zone_distance", None),
         },
     }
+
