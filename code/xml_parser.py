@@ -13,8 +13,12 @@ from .measures import HRVMeasures
 from .summary import generate_summary
 
 
+# ==========================================
+# 内部小工具：解析 XML root / Patient 節點
+# ==========================================
+
 def _parse_xml_root(xml_text: str) -> ET.Element:
-    """把文字解析成 XML root，並找到 <Patient> 節點"""
+    """把文字解析成 XML root，並取得 <Patient> 節點。"""
     xml_text = (xml_text or "").strip()
     if not xml_text:
         raise ValueError("XML 內容是空的")
@@ -24,7 +28,7 @@ def _parse_xml_root(xml_text: str) -> ET.Element:
     except ET.ParseError as e:
         raise ValueError(f"XML 解析失敗：{e}") from e
 
-    # 允許外面再包一層，找裡面的 <Patient>
+    # XML 可能外面再包一層，要往下找 <Patient>
     if root.tag.lower() != "patient":
         patient = root.find(".//Patient")
         if patient is None:
@@ -34,14 +38,18 @@ def _parse_xml_root(xml_text: str) -> ET.Element:
     return root
 
 
+# ==========================================
+# 主解析：XML → HRVMeasures + meta
+# ==========================================
+
 def parse_hrv_xml(xml_text: str) -> Tuple[HRVMeasures, Dict[str, Any]]:
     """
     解析 HRV XML，回傳：
-      - HRVMeasures
-      - meta（姓名、年齡、性別、BMI…）
+      - HRVMeasures 物件（含 HR / SDNN / TP / LF / HF…）
+      - meta dict（姓名、性別、年齡、BMI…）
     """
     root = _parse_xml_root(xml_text)
-    attr = root.attrib  # 所有 <Patient ...> 的屬性都在這裡
+    attr = root.attrib  # <Patient ...> 的所有屬性都在這裡
 
     # ----- 小工具：安全轉型 -----
     def _get_str(key: str) -> str:
@@ -65,7 +73,7 @@ def parse_hrv_xml(xml_text: str) -> Tuple[HRVMeasures, Dict[str, Any]]:
         except Exception:
             return default
 
-    # ----- 取基本資訊 -----
+    # ----- 1) 基本資訊 meta -----
     name = _get_str("Name") or None
     sex = _get_str("Sex") or None
     age = _get_int("Age")
@@ -86,34 +94,45 @@ def parse_hrv_xml(xml_text: str) -> Tuple[HRVMeasures, Dict[str, Any]]:
         "id": _get_str("ID") or None,
         "test_time": _get_str("TestTime") or None,
         "test_date": _get_str("TestDate") or None,
+        # 保留原始屬性方便 debug
         "raw_attr": dict(attr),
     }
 
-    # ----- HRV 指標 mapping：XML → HRVMeasures -----
+    # ----- 2) HRV 指標 mapping：XML → HRVMeasures -----
+    # ✅ 這裡是關鍵：XML 裡是 SD，但 dataclass 欄位是 SDNN
     hrv_kwargs = {
         "HR": _get_float("HR"),
-        "SDNN": _get_float("SD"),      # ⭐ XML 的 SD → HRVMeasures.SDNN
+        "SDNN": _get_float("SD"),       # ⭐ SD → SDNN
         "RV": _get_float("RV"),
-        "ER": _get_int("ER"),
-        "N": _get_int("N"),
+        "ER": _get_float("ER"),
+        "N": _get_int("N") or 0,
         "TP": _get_float("TP"),
         "LF": _get_float("LF"),
         "HF": _get_float("HF"),
         "NN": _get_float("NN"),
         "Balance": _get_float("Balance"),
+        # 目前 HRVMeasures 沒有 VL 欄位，所以先不丟進去，
+        # 之後如果你在 dataclass 加上 VL，再從這裡一起補上即可：
+        # "VL": _get_float("VL"),
     }
-    measures = HRVMeasures(**hrv_kwargs)
 
+    measures = HRVMeasures(**hrv_kwargs)
 
     return measures, meta
 
 
+# ==========================================
+# 一條龍：XML → 報告 dict
+# ==========================================
+
 def generate_report_from_xml(xml_text: str) -> Dict[str, Any]:
     """
-    一條龍：XML → HRVMeasures → 體質報告 dict
+    一條龍：
+      XML → HRVMeasures → generate_summary → 報告 dict
     """
     measures, meta = parse_hrv_xml(xml_text)
 
+    # 交給 summary 模組產出體質說明 / phenotypes / 建議
     report = generate_summary(
         measures,
         name=meta.get("name"),
@@ -122,17 +141,20 @@ def generate_report_from_xml(xml_text: str) -> Dict[str, Any]:
         bmi=meta.get("bmi"),
     )
 
-    # 把原始 XML 的資訊補進 meta，方便前端或 debug 使用
+    # 確保 meta 存在
     report_meta = report.setdefault("meta", {})
-    report_meta["name"] = meta.get("name")
-    report_meta["sex"] = meta.get("sex")
-    report_meta["age"] = meta.get("age")
-    report_meta["bmi"] = meta.get("bmi")
-    report_meta["id"] = meta.get("id")
-    report_meta["test_date"] = meta.get("test_date")
-    report_meta["test_time"] = meta.get("test_time")
-    report_meta["height"] = meta.get("height")
-    report_meta["weight"] = meta.get("weight")
-    report_meta["raw_xml_attr"] = meta.get("raw_attr", {})
+
+    # 把原始 XML 的資訊補回報告 meta
+    report_meta.setdefault("name", meta.get("name"))
+    report_meta.setdefault("sex", meta.get("sex"))
+    report_meta.setdefault("age", meta.get("age"))
+    report_meta.setdefault("bmi", meta.get("bmi"))
+    report_meta.setdefault("id", meta.get("id"))
+    report_meta.setdefault("test_date", meta.get("test_date"))
+    report_meta.setdefault("test_time", meta.get("test_time"))
+    report_meta.setdefault("height", meta.get("height"))
+    report_meta.setdefault("weight", meta.get("weight"))
+    report_meta.setdefault("raw_xml_attr", meta.get("raw_attr", {}))
 
     return report
+
