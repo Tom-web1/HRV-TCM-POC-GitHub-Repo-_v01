@@ -6,112 +6,114 @@
 # 3. 呼叫 generate_summary 產生體質報告
 # ==========================================
 
-from typing import Any, Dict, Tuple
+from typing import Any, Dict, Tuple, Optional
 import xml.etree.ElementTree as ET
 
 from .measures import HRVMeasures
 from .summary import generate_summary
 
 
-def parse_hrv_xml(xml_text: str) -> Tuple[HRVMeasures, Dict[str, Any]]:
-    """
-    解析單筆 HRV XML 文字，回傳：
-      - HRVMeasures 物件
-      - 基本資訊 dict（name / age / sex / bmi 等）
-
-    預期 XML 形式類似：
-    <Patient Name="TOM" Sex="男" Height="175.0" Weight="67.0"
-             Age="51" HR="57" SD="63.7" RV="1861.00" ER="9" N="121"
-             TP="4034" VL="1839" LF="1605" HF="528" ... />
-    """
+def _parse_xml_root(xml_text: str) -> ET.Element:
+    """把文字解析成 XML root，並找到 <Patient> 節點"""
     xml_text = (xml_text or "").strip()
     if not xml_text:
-        raise ValueError("XML 內容為空，無法解析。")
+        raise ValueError("XML 內容是空的")
 
     try:
         root = ET.fromstring(xml_text)
-    except ET.ParseError:
-        # 有些情況 XML 會包在 <Root> ... <Patient .../> ... </Root>
-        root = ET.fromstring(f"<Root>{xml_text}</Root>")
+    except ET.ParseError as e:
+        raise ValueError(f"XML 解析失敗：{e}") from e
 
-    # 嘗試找到 Patient 節點
-    patient = root if root.tag == "Patient" else root.find(".//Patient")
-    if patient is None:
-        raise ValueError("找不到 <Patient ...> 節點，請確認 XML 格式。")
+    # 允許外面再包一層，找裡面的 <Patient>
+    if root.tag.lower() != "patient":
+        patient = root.find(".//Patient")
+        if patient is None:
+            raise ValueError("XML 中找不到 <Patient> 節點")
+        root = patient
 
-    attr = patient.attrib
+    return root
 
-    # 1) HRV 指標欄位
+
+def parse_hrv_xml(xml_text: str) -> Tuple[HRVMeasures, Dict[str, Any]]:
+    """
+    解析 HRV XML，回傳：
+      - HRVMeasures
+      - meta（姓名、年齡、性別、BMI…）
+    """
+    root = _parse_xml_root(xml_text)
+    attr = root.attrib  # 所有 <Patient ...> 的屬性都在這裡
+
+    # ----- 小工具：安全轉型 -----
+    def _get_str(key: str) -> str:
+        return attr.get(key, "").strip()
+
+    def _get_int(key: str, default: int = 0) -> Optional[int]:
+        v = attr.get(key, None)
+        if v is None or str(v).strip() == "":
+            return None
+        try:
+            return int(float(v))
+        except Exception:
+            return default
+
     def _get_float(key: str, default: float = 0.0) -> float:
+        v = attr.get(key, None)
+        if v is None or str(v).strip() == "":
+            return default
         try:
-            return float(attr.get(key, default))
+            return float(v)
         except Exception:
             return default
 
-    def _get_int(key: str, default: int = 0) -> int:
-        try:
-            return int(float(attr.get(key, default)))
-        except Exception:
-            return default
+    # ----- 取基本資訊 -----
+    name = _get_str("Name") or None
+    sex = _get_str("Sex") or None
+    age = _get_int("Age")
+    height = _get_float("Height", 0.0)
+    weight = _get_float("Weight", 0.0)
 
-    hrv_kwargs = {
-        "HR": _get_float("HR"),
-        "SD": _get_float("SD"),
-        "RV": _get_float("RV"),
-        "ER": _get_int("ER"),
-        "N": _get_int("N"),
-        "TP": _get_float("TP"),
-        "VL": _get_float("VL"),
-        "LF": _get_float("LF"),
-        "HF": _get_float("HF"),
-    }
-    measures = HRVMeasures(**hrv_kwargs)
+    bmi: Optional[float] = None
+    if height > 0 and weight > 0:
+        bmi = weight / ((height / 100.0) ** 2)
 
-    # 2) 基本資訊（報告用，不做醫療判讀）
-    name = attr.get("Name") or attr.get("PatientName") or ""
-    sex = attr.get("Sex") or ""
-    age = None
-    try:
-        age = int(attr.get("Age")) if attr.get("Age") is not None else None
-    except Exception:
-        age = None
-
-    height = None
-    weight = None
-    try:
-        height = float(attr.get("Height")) if attr.get("Height") is not None else None
-        weight = float(attr.get("Weight")) if attr.get("Weight") is not None else None
-    except Exception:
-        pass
-
-    bmi = None
-    if height and weight and height > 0:
-        h_m = height / 100.0  # cm → m
-        bmi = weight / (h_m * h_m)
-
-    meta = {
+    meta: Dict[str, Any] = {
         "name": name,
         "sex": sex,
         "age": age,
-        "height": height,
-        "weight": weight,
+        "height": height or None,
+        "weight": weight or None,
         "bmi": bmi,
-        "raw_attr": attr,  # 保留原始屬性，方便之後 debug 或擴充
+        "id": _get_str("ID") or None,
+        "test_time": _get_str("TestTime") or None,
+        "test_date": _get_str("TestDate") or None,
+        "raw_attr": dict(attr),
     }
+
+    # ----- HRV 指標 mapping：XML → HRVMeasures -----
+    # 注意：XML 裡是 SD，但 HRVMeasures 裡是 SDNN
+    hrv_kwargs = {
+        "HR": _get_float("HR"),
+        "SDNN": _get_float("SD"),   # ⭐ 關鍵：把 SD 映射到 SDNN
+        "RV": _get_float("RV"),
+        "ER": _get_float("ER"),
+        "N": _get_int("N") or 0,
+        "TP": _get_float("TP"),
+        "LF": _get_float("LF"),
+        "HF": _get_float("HF"),
+        "NN": _get_float("NN"),
+        "Balance": _get_float("Balance"),
+        # 如果之後 HRVMeasures 有加 VL，就在這裡一起補：
+        # "VL": _get_float("VL"),
+    }
+
+    measures = HRVMeasures(**hrv_kwargs)
 
     return measures, meta
 
 
 def generate_report_from_xml(xml_text: str) -> Dict[str, Any]:
     """
-    直接從 XML 文字產生完整 HRV × TCM 報告結構：
-      {
-        "title": ...,
-        "summary": ...,
-        "phenotypes": [...],
-        "advice": [...],
-        "meta": {...}
-      }
+    一條龍：XML → HRVMeasures → 體質報告 dict
     """
     measures, meta = parse_hrv_xml(xml_text)
 
@@ -123,9 +125,17 @@ def generate_report_from_xml(xml_text: str) -> Dict[str, Any]:
         bmi=meta.get("bmi"),
     )
 
-    # 把原始 XML 的屬性也放進 meta 裡，方便前端需要時顯示
-    report["meta"]["raw_xml_attr"] = meta.get("raw_attr", {})
-    report["meta"]["height"] = meta.get("height")
-    report["meta"]["weight"] = meta.get("weight")
+    # 把原始 XML 的資訊補進 meta，方便前端或 debug 使用
+    report_meta = report.setdefault("meta", {})
+    report_meta["name"] = meta.get("name")
+    report_meta["sex"] = meta.get("sex")
+    report_meta["age"] = meta.get("age")
+    report_meta["bmi"] = meta.get("bmi")
+    report_meta["id"] = meta.get("id")
+    report_meta["test_date"] = meta.get("test_date")
+    report_meta["test_time"] = meta.get("test_time")
+    report_meta["height"] = meta.get("height")
+    report_meta["weight"] = meta.get("weight")
+    report_meta["raw_xml_attr"] = meta.get("raw_attr", {})
 
     return report
