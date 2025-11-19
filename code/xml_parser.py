@@ -90,23 +90,20 @@ def parse_hrv_xml(xml_text: str) -> Tuple[HRVMeasures, Dict[str, Any]]:
     }
 
     # ----- HRV 指標 mapping：XML → HRVMeasures -----
-    # 注意：XML 裡是 SD，但 HRVMeasures 裡是 SDNN
     hrv_kwargs = {
         "HR": _get_float("HR"),
-        "SDNN": _get_float("SD"),   # ⭐ 關鍵：把 SD 映射到 SDNN
+        "SDNN": _get_float("SD"),      # ⭐ XML 的 SD → HRVMeasures.SDNN
         "RV": _get_float("RV"),
-        "ER": _get_float("ER"),
-        "N": _get_int("N") or 0,
+        "ER": _get_int("ER"),
+        "N": _get_int("N"),
         "TP": _get_float("TP"),
         "LF": _get_float("LF"),
         "HF": _get_float("HF"),
         "NN": _get_float("NN"),
         "Balance": _get_float("Balance"),
-        # 如果之後 HRVMeasures 有加 VL，就在這裡一起補：
-        # "VL": _get_float("VL"),
     }
-
     measures = HRVMeasures(**hrv_kwargs)
+
 
     return measures, meta
 
