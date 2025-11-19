@@ -1,141 +1,34 @@
-# code/xml_parser.py
+# test/demo_from_xml.py
 # ==========================================
-# 專門處理 HRV XML：
-# 1. 解析 <Patient ...> 屬性
-# 2. 建立 HRVMeasures 物件
-# 3. 呼叫 generate_summary 產生體質報告
+# Demo：直接用 XML 內容產生 HRV × TCM 報告
 # ==========================================
 
-from typing import Any, Dict, Tuple, Optional
-import xml.etree.ElementTree as ET
+from code.xml_parser import generate_report_from_xml
 
-from .measures import HRVMeasures
-from .summary import generate_summary
+xml_text = """
+<Patient Name="TOM" Sex="男" ID="20251015001"
+         Height="175.0" Weight="67.0"
+         Birthday="1974/06/06"
+         TestTime="22:12:26" TestDate="2025-10-15"
+         Age="51" HR="57" SD="63.7" RV="1861.00"
+         ER="9" N="121" TP="4034" VL="1839"
+         LF="1605" HF="528" NN="1051"
+         ANSAgeMIN="-1" ANSAgeMAX="20" Balance="-1.2"/>
+""".strip()
 
+report = generate_report_from_xml(xml_text)
 
-def _parse_xml_root(xml_text: str) -> ET.Element:
-    """把文字解析成 XML root，並找到 <Patient> 節點"""
-    xml_text = (xml_text or "").strip()
-    if not xml_text:
-        raise ValueError("XML 內容是空的")
+print("\n===== 🔵", report["title"], "=====\n")
+print(report["summary"], "\n")
 
-    try:
-        root = ET.fromstring(xml_text)
-    except ET.ParseError as e:
-        raise ValueError(f"XML 解析失敗：{e}") from e
+print("===== 🟡 常見生理特徵（可能符合您的狀態） =====")
+for p in report["phenotypes"]:
+    print(" -", p)
 
-    # 允許外面再包一層，找裡面的 <Patient>
-    if root.tag.lower() != "patient":
-        patient = root.find(".//Patient")
-        if patient is None:
-            raise ValueError("XML 中找不到 <Patient> 節點")
-        root = patient
+print("\n===== 🟢 養生建議 =====")
+for a in report["advice"]:
+    print(" -", a)
 
-    return root
-
-
-def parse_hrv_xml(xml_text: str) -> Tuple[HRVMeasures, Dict[str, Any]]:
-    """
-    解析 HRV XML，回傳：
-      - HRVMeasures
-      - meta（姓名、年齡、性別、BMI…）
-    """
-    root = _parse_xml_root(xml_text)
-    attr = root.attrib  # 所有 <Patient ...> 的屬性都在這裡
-
-    # ----- 小工具：安全轉型 -----
-    def _get_str(key: str) -> str:
-        return attr.get(key, "").strip()
-
-    def _get_int(key: str, default: int = 0) -> Optional[int]:
-        v = attr.get(key, None)
-        if v is None or str(v).strip() == "":
-            return None
-        try:
-            return int(float(v))
-        except Exception:
-            return default
-
-    def _get_float(key: str, default: float = 0.0) -> float:
-        v = attr.get(key, None)
-        if v is None or str(v).strip() == "":
-            return default
-        try:
-            return float(v)
-        except Exception:
-            return default
-
-    # ----- 取基本資訊 -----
-    name = _get_str("Name") or None
-    sex = _get_str("Sex") or None
-    age = _get_int("Age")
-    height = _get_float("Height", 0.0)
-    weight = _get_float("Weight", 0.0)
-
-    bmi: Optional[float] = None
-    if height > 0 and weight > 0:
-        bmi = weight / ((height / 100.0) ** 2)
-
-    meta: Dict[str, Any] = {
-        "name": name,
-        "sex": sex,
-        "age": age,
-        "height": height or None,
-        "weight": weight or None,
-        "bmi": bmi,
-        "id": _get_str("ID") or None,
-        "test_time": _get_str("TestTime") or None,
-        "test_date": _get_str("TestDate") or None,
-        "raw_attr": dict(attr),
-    }
-
-    # ----- HRV 指標 mapping：XML → HRVMeasures -----
-    # 注意：XML 裡是 SD，但 HRVMeasures 裡是 SDNN
-    hrv_kwargs = {
-        "HR": _get_float("HR"),
-        "SDNN": _get_float("SD"),   # ⭐ 關鍵：把 SD 映射到 SDNN
-        "RV": _get_float("RV"),
-        "ER": _get_float("ER"),
-        "N": _get_int("N") or 0,
-        "TP": _get_float("TP"),
-        "LF": _get_float("LF"),
-        "HF": _get_float("HF"),
-        "NN": _get_float("NN"),
-        "Balance": _get_float("Balance"),
-        # 如果之後 HRVMeasures 有加 VL，就在這裡一起補：
-        # "VL": _get_float("VL"),
-    }
-
-    measures = HRVMeasures(**hrv_kwargs)
-
-    return measures, meta
-
-
-def generate_report_from_xml(xml_text: str) -> Dict[str, Any]:
-    """
-    一條龍：XML → HRVMeasures → 體質報告 dict
-    """
-    measures, meta = parse_hrv_xml(xml_text)
-
-    report = generate_summary(
-        measures,
-        name=meta.get("name"),
-        age=meta.get("age"),
-        sex=meta.get("sex"),
-        bmi=meta.get("bmi"),
-    )
-
-    # 把原始 XML 的資訊補進 meta，方便前端或 debug 使用
-    report_meta = report.setdefault("meta", {})
-    report_meta["name"] = meta.get("name")
-    report_meta["sex"] = meta.get("sex")
-    report_meta["age"] = meta.get("age")
-    report_meta["bmi"] = meta.get("bmi")
-    report_meta["id"] = meta.get("id")
-    report_meta["test_date"] = meta.get("test_date")
-    report_meta["test_time"] = meta.get("test_time")
-    report_meta["height"] = meta.get("height")
-    report_meta["weight"] = meta.get("weight")
-    report_meta["raw_xml_attr"] = meta.get("raw_attr", {})
-
-    return report
+print("\n===== 🔍 META（供 debug 用） =====")
+for k, v in report["meta"].items():
+    print(f"{k}: {v}")
